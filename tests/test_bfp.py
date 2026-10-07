@@ -1,9 +1,9 @@
-"""End-to-end tests for the C bserve/bcurl.
+"""End-to-end tests for both implementations (C and Python) of BFP/1.
 
 Every byte here is packed by hand from SPEC.md -- nothing is shared with
 the C code -- so these test the spec, not just C-talks-to-C.
 
-    make && python3 tests/test_bfp.py
+    make && python3 tests/test_bfp.py      (Python-only pair runs without make)
 """
 
 import os
@@ -16,8 +16,11 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WWW = os.path.join(ROOT, "www")
 EXE = ".exe" if os.name == "nt" else ""
-BSERVE = os.path.join(ROOT, "bserve" + EXE)
-BCURL = os.path.join(ROOT, "bcurl" + EXE)
+C_SERVER = [os.path.join(ROOT, "bserve" + EXE)]
+C_CLIENT = [os.path.join(ROOT, "bcurl" + EXE)]
+PY_SERVER = [sys.executable, os.path.join(ROOT, "py", "bserve.py")]
+PY_CLIENT = [sys.executable, os.path.join(ROOT, "py", "bcurl.py")]
+HAVE_C = os.path.exists(C_SERVER[0]) and os.path.exists(C_CLIENT[0])
 
 STATIC = [":method", ":path", ":status", ":authority", "user-agent", "accept",
           "content-type", "content-length", "server", "date"]
@@ -86,12 +89,15 @@ def read_response(s):
 
 # ------------------------------------------------------------ tests
 
-class BfpTest(unittest.TestCase):
+class Suite:
+    """Every test, run against one server implementation and one client."""
+    SERVER = CLIENT = None
+
     @classmethod
     def setUpClass(cls):
         s = socket.socket(); s.bind(("127.0.0.1", 0))
         cls.port = s.getsockname()[1]; s.close()
-        cls.srv = subprocess.Popen([BSERVE, WWW, str(cls.port)], stderr=subprocess.DEVNULL)
+        cls.srv = subprocess.Popen(cls.SERVER + [WWW, str(cls.port)], stderr=subprocess.DEVNULL)
         for _ in range(50):
             try:
                 socket.create_connection(("127.0.0.1", cls.port)).close()
@@ -114,7 +120,7 @@ class BfpTest(unittest.TestCase):
         return read_response(s)
 
     def bcurl(self, *args):
-        return subprocess.run([BCURL] + list(args), capture_output=True, timeout=10)
+        return subprocess.run(self.CLIENT + list(args), capture_output=True, timeout=10)
 
     def file(self, name):
         with open(os.path.join(WWW, name), "rb") as f:
@@ -212,7 +218,7 @@ class BfpTest(unittest.TestCase):
         that sends an unknown frame and splits the body must still work."""
         ls = socket.socket(); ls.bind(("127.0.0.1", 0)); ls.listen(1)
         port = ls.getsockname()[1]
-        p = subprocess.Popen([BCURL, "localhost:%d/x" % port], stdout=subprocess.PIPE)
+        p = subprocess.Popen(self.CLIENT + ["localhost:%d/x" % port], stdout=subprocess.PIPE)
         c, _ = ls.accept()
         t, fl, st, payload = read_frame(c)
         self.assertEqual((t, fl, st), (0x1, 0x1, 1))
@@ -223,6 +229,28 @@ class BfpTest(unittest.TestCase):
         out, _ = p.communicate(timeout=5)
         c.close(); ls.close()
         self.assertEqual((p.returncode, out), (0, b"hello"))
+
+
+# The same 21 tests, four ways. The two cross-language pairs are the real
+# proof: a client and a server that share nothing but SPEC.md.
+
+@unittest.skipUnless(HAVE_C, "build the C programs first (make)")
+class C_server_C_client(Suite, unittest.TestCase):
+    SERVER, CLIENT = C_SERVER, C_CLIENT
+
+
+class Py_server_Py_client(Suite, unittest.TestCase):
+    SERVER, CLIENT = PY_SERVER, PY_CLIENT
+
+
+@unittest.skipUnless(HAVE_C, "build the C programs first (make)")
+class C_server_Py_client(Suite, unittest.TestCase):
+    SERVER, CLIENT = C_SERVER, PY_CLIENT
+
+
+@unittest.skipUnless(HAVE_C, "build the C programs first (make)")
+class Py_server_C_client(Suite, unittest.TestCase):
+    SERVER, CLIENT = PY_SERVER, C_CLIENT
 
 
 if __name__ == "__main__":

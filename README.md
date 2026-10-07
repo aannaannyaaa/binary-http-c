@@ -1,41 +1,40 @@
-# BFP/1 — HTTP over binary frames, in C
+# BFP/1 — HTTP over binary frames
 
 A server (`bserve`) and a client (`bcurl`) that speak **BFP/1**, a binary
-framing of HTTP GET/HEAD over a single TCP connection. The spec is the
-contract; the code is one implementation of it.
+framing of HTTP GET/HEAD over a single TCP connection — implemented **twice**,
+in **C** and in **Python**. The two share no code, only [SPEC.md](SPEC.md),
+and every client works against every server.
 
 | | |
 |---|---|
 | [SPEC.md](SPEC.md) | **The spec** — two pages, written for a stranger |
 | [HEXDUMP.md](HEXDUMP.md) | **Annotated hexdump** of one full request + response, every byte |
-| [src/bserve.c](src/bserve.c) | Track 1 — the server |
-| [src/bcurl.c](src/bcurl.c) | Track 2 — the client |
-| [src/bfp.c](src/bfp.c), [src/bfp.h](src/bfp.h) | Frame I/O, header codec, hexdump |
-| [tests/test_bfp.py](tests/test_bfp.py) | 21 end-to-end tests using hand-packed bytes |
+| [src/](src) | C implementation — `bserve.c`, `bcurl.c`, `bfp.c/.h` (framing + header codec) |
+| [py/](py) | Python implementation — `bserve.py` (asyncio), `bcurl.py`, `bfp.py` |
+| [tests/test_bfp.py](tests/test_bfp.py) | 21 end-to-end tests × 4 client/server pairs = 84 |
 | [www/](www) | Sample files to serve |
 
-## Build
+## Quick start (Python — nothing to build)
 
-Plain C99, no dependencies. Linux / macOS:
-
-```bash
-make
-```
-
-Windows (MinGW-w64 gcc):
+Python 3.8+, standard library only.
 
 ```bash
-mingw32-make
+python3 py/bserve.py ./www 9000
 ```
 
-or without make:
+```bash
+python3 py/bcurl.py -v localhost:9000/index.html
+```
+
+## C version
+
+Plain C99, no dependencies. Linux / macOS: `make`. Windows (MinGW-w64):
+`mingw32-make`, or without make:
 
 ```bash
 gcc -O2 -o bserve.exe src/bserve.c src/bfp.c -lws2_32
 gcc -O2 -o bcurl.exe src/bcurl.c src/bfp.c -lws2_32
 ```
-
-## Run
 
 ```bash
 ./bserve ./www 9000
@@ -45,9 +44,27 @@ gcc -O2 -o bcurl.exe src/bcurl.c src/bfp.c -lws2_32
 ./bcurl -v localhost:9000/index.html
 ```
 
-### bserve — `./bserve ROOT PORT [-v]`
+## Mix and match
 
-- accepts TCP connections, one thread each
+Because both follow the spec byte for byte, any client talks to any server:
+
+| client ↓  server → | `bserve` (C) | `bserve.py` (Python) |
+|---|---|---|
+| `bcurl` (C) | ✓ | ✓ |
+| `bcurl.py` (Python) | ✓ | ✓ |
+
+```bash
+./bserve ./www 9000 &
+python3 py/bcurl.py localhost:9000/index.html /docs/notes.txt
+```
+
+## The programs
+
+Both implementations take the same arguments and behave the same.
+
+### bserve — `bserve ROOT PORT [-v]`
+
+- accepts TCP connections (C: one thread each; Python: asyncio)
 - reads binary request frames, maps `:path` to a file under ROOT
   (directory → `index.html`; `..`, `\`, `:` → refused)
 - replies with `:status`, headers, then the file in ≤16 KiB DATA frames
@@ -57,7 +74,7 @@ gcc -O2 -o bcurl.exe src/bcurl.c src/bfp.c -lws2_32
 - skips frame types it does not know
 - `-v` hexdumps every frame (`<` received, `>` sent)
 
-### bcurl — `./bcurl [-v] [-I] [--probe] host:port/path [/more/paths ...]`
+### bcurl — `bcurl [-v] [-I] [--probe] host:port/path [/more/paths ...]`
 
 - builds the binary request frame and writes the body to **stdout**
 - `-v` hexdumps every frame to stderr (`>` sent, `<` received)
@@ -69,7 +86,7 @@ gcc -O2 -o bcurl.exe src/bcurl.c src/bfp.c -lws2_32
   connect, `8` bad reply, `2` usage
 
 ```bash
-./bcurl localhost:9000/index.html /docs/notes.txt /missing; echo $?   # prints 22
+python3 py/bcurl.py localhost:9000/index.html /docs/notes.txt /missing; echo $?   # prints 22
 ```
 
 ## Tests
@@ -78,14 +95,14 @@ gcc -O2 -o bcurl.exe src/bcurl.c src/bfp.c -lws2_32
 make test
 ```
 
-(or `python tests/test_bfp.py` after building). The tests never use the C
-codec: they build frames byte-by-byte from SPEC.md, so they check the
-**protocol**, not just that this client agrees with this server. Covered:
-200, HEAD, directory index, 404, three traversal tricks, 405, every 400
-case, stream 0, unknown frame types, 7 requests on one connection, a 51 KB
-file split into DATA frames, bcurl's stdout and exit codes, and bcurl
-against a hand-written fake server that sends an unknown frame and a
-split body.
+(or `python3 tests/test_bfp.py`; without the C build only the Python pair
+runs). The tests never import either codec: they build frames byte by byte
+from SPEC.md, so they check the **protocol**. Each of the 21 tests runs four
+times — C↔C, Py↔Py, C server + Py client, Py server + C client. Covered: 200,
+HEAD, directory index, 404, three traversal tricks, 405, every 400 case,
+stream 0, unknown frame types, 7 requests on one connection, a 51 KB file
+split into DATA frames, bcurl's stdout and exit codes, and bcurl against a
+hand-written fake server that sends an unknown frame and a split body.
 
 ## The design, in short
 
