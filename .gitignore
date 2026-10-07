@@ -1,0 +1,6 @@
+*.exe
+bserve
+bcurl
+*.o
+*.log
+__pycache__/
